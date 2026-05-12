@@ -5,20 +5,120 @@
   const ParameterType = window.jsPsychModule?.ParameterType || window.jsPsych?.ParameterType;
 
   const CONFIG = {
-    pumpsPerClick: 0.05,
-    trialCountPerColor: 10,
+    /** 每 block 内每种颜色气球数量（共 3×7=21 试次，随机打乱顺序） */
+    trialCountPerColor: 7,
     colors: ["orange", "yellow", "blue"],
-    riskCaps: [8, 32, 128],
+    /** 所有颜色气球爆炸上限相同，仅外观颜色不同 */
+    explosionCapM: 64,
     baseScale: 1,
     scalePerPump: 0.015,
-    maxScale: 2.4
+    maxScale: 2.4,
+    /** 低粒度（粗）单泵金额；高粒度（细）单泵 = 此值 / granularityK */
+    baseRewardPerEffectiveStep: 5,
+    /** 与粗/细金额耦合：细颗粒 = 5/50 = 0.1 */
+    granularityK: 50
   };
 
-  const subjectId = `S${Date.now().toString(36).toUpperCase()}`;
-  let totalEarnings = 0;
-  const bartResults = [];
-  let colorRiskMapping = {};
+  const DESIGN = "within_subjects";
 
+  /** 与项目内《量表,md》一致：20 题，1–4 级（程序中 response 为 0–3，存档 +1 为 1–4） */
+  const STRESS_SCALE_ITEMS = [
+    "感到心情平静。",
+    "我感到安全。",
+    "我是紧张的。",
+    "我感到紧张束缚。",
+    "我感到安逸。",
+    "我感到烦乱。",
+    "我现在正烦恼，感到这种烦恼超过了可能的不幸。",
+    "我感到满意。",
+    "我感到害怕。",
+    "我感到舒适。",
+    "我有自信心。",
+    "我觉得神经过敏。",
+    "我极度紧张不安。",
+    "优柔寡断。",
+    "我是轻松的。",
+    "我感到心满意足。",
+    "我是烦恼的。",
+    "我感到慌乱。",
+    "我感到镇定。",
+    "我感到愉快。"
+  ];
+
+  const STRESS_S_KEYS = Array.from(
+    { length: STRESS_SCALE_ITEMS.length },
+    (_, i) => `stress_s${String(i + 1).padStart(2, "0")}`
+  );
+
+  const EMPTY_STRESS_FIELDS = Object.fromEntries(STRESS_S_KEYS.map((k) => [k, ""]));
+
+  /** 与项目内《特质量表.md》一致：20 题，1–4 级（存档为 1–4） */
+  const TRAIT_SCALE_ITEMS = [
+    "我感到愉快。",
+    "感到神经过敏和不安。",
+    "我感到自我满足。",
+    "我希望能和别人那样地高兴。",
+    "我感到我像衰竭一样。",
+    "我感到很宁静。",
+    "我是平静的、冷静的和泰然自若的。",
+    "我感到困难一一堆积起来，因此无法克服。",
+    "我过分忧虑一些事，实际这些事无关紧要。",
+    "我是高兴的。",
+    "我的思想处于混乱状态。",
+    "我缺乏自信心。",
+    "我感到安全。",
+    "我容易做出决断。",
+    "我感到不合适。",
+    "我是满足的。",
+    "一些不重要的思想总缠绕着我，并打扰我。",
+    "我产生的沮丧是如此强烈，以致我不能从思想上排除它们。",
+    "我是一个镇定的人。",
+    "当我考虑我目前的事情和利益时就陷入紧张状态。"
+  ];
+
+  /** 与《特质量表.md》首行评定说明一致（HTML） */
+  const TRAIT_RATING_INSTRUCTION =
+    "采用<strong>1–4</strong>级评定：1—几乎没有；2—有些；3—中等程度或是经常有；4—非常明显或几乎总是如此。";
+
+  const TRAIT_T_KEYS = Array.from(
+    { length: TRAIT_SCALE_ITEMS.length },
+    (_, i) => `trait_t${String(i + 1).padStart(2, "0")}`
+  );
+
+  const EMPTY_TRAIT_FIELDS = Object.fromEntries(TRAIT_T_KEYS.map((k) => [k, ""]));
+
+  /** 与《刺激评定量表.md》一致的 1–4 说明（与状态/特质量表措辞略有不同） */
+  const STIM_RATING_INSTRUCTION =
+    "采用<strong>1–4</strong>级评定：1—几乎没有；2—有些；3—中等程度；4—非常明显。";
+
+  const STIM_ATTRACT_KEYS = ["stim_attract_01", "stim_attract_5"];
+  const EMPTY_STIM_FIELDS = Object.fromEntries(STIM_ATTRACT_KEYS.map((k) => [k, ""]));
+
+  function readSubjectNumber() {
+    const params = new URLSearchParams(window.location.search || "");
+    for (const key of ["subj", "subject", "id", "sid"]) {
+      const raw = params.get(key);
+      if (raw == null || String(raw).trim() === "") continue;
+      const n = Number.parseInt(String(raw).trim(), 10);
+      if (Number.isFinite(n) && n > 0) return n;
+    }
+    const entered = window.prompt(
+      "请输入被试编号（正整数，仅用于数据归档）。\n也可在网址后加 ?subj=编号 跳过本步。\n留空则随机生成（便于自测）。",
+      ""
+    );
+    if (entered == null) return Math.floor(Math.random() * 99998) + 1;
+    const trimmed = String(entered).trim();
+    if (trimmed === "") return Math.floor(Math.random() * 99998) + 1;
+    const n = Number.parseInt(trimmed, 10);
+    if (Number.isFinite(n) && n > 0) return n;
+    return Math.floor(Math.random() * 99998) + 1;
+  }
+
+  const subjectNumber = readSubjectNumber();
+  const subjectId = `S${subjectNumber}`;
+  let totalEarnings = 0;
+  /** BART 试次 + 区块自评，供下载与分析 */
+  const bartResults = [];
   function shuffle(arr) {
     const a = [...arr];
     for (let i = a.length - 1; i > 0; i -= 1) {
@@ -28,8 +128,17 @@
     return a;
   }
 
-  function sampleThreshold(maxPumps) {
-    return Math.floor(Math.random() * (maxPumps - 1)) + 2;
+  const blockGranOrder = shuffle(["high", "low"]);
+  const blockOrderLabel = blockGranOrder[0] === "high" ? "high_first" : "low_first";
+
+  /**
+   * 等价于爆炸点 N ~ Uniform{1,…,M}：第 k 次充气后，若尚未爆炸，则本步爆炸概率为 1/(M−k+1)。
+   * @param {number} pumpsAfterClick 本次点击后的累计充气次数 k
+   * @param {number} M 爆炸充气上限（各气球相同，由 CONFIG.explosionCapM 指定，当前为 64）
+   */
+  function shouldExplodeAfterPump(pumpsAfterClick, M) {
+    if (pumpsAfterClick >= M) return true;
+    return Math.random() < 1 / (M - pumpsAfterClick + 1);
   }
 
   const audioCollect = new Audio("material/collect.m4a");
@@ -50,21 +159,21 @@
     return "蓝色";
   }
 
-  function buildTrials() {
-    const shuffledCaps = shuffle(CONFIG.riskCaps);
-    colorRiskMapping = CONFIG.colors.reduce((acc, color, idx) => {
-      acc[color] = shuffledCaps[idx];
-      return acc;
-    }, {});
+  function getGranularityLabel(granularity) {
+    return granularity === "high" ? "高粒度（多步小额）" : "低粒度（少步大额）";
+  }
 
+  /**
+   * @param {"high"|"low"} _granularity 保留参数以便与调用方一致；试次池不依赖粒度
+   */
+  function buildTrials(_granularity) {
     const pool = [];
+    const M = CONFIG.explosionCapM;
     CONFIG.colors.forEach((color) => {
       for (let i = 0; i < CONFIG.trialCountPerColor; i += 1) {
-        const maxPumps = colorRiskMapping[color];
         pool.push({
           color,
-          maxPumps,
-          threshold: sampleThreshold(maxPumps)
+          maxPumps: M
         });
       }
     });
@@ -80,10 +189,19 @@
       name: "bart-plugin",
       parameters: {
         trial_index_global: { type: ParameterType.INT, default: 0 },
-        total_trials: { type: ParameterType.INT, default: 30 },
+        total_trials_in_block: { type: ParameterType.INT, default: 21 },
+        trial_index_in_block: { type: ParameterType.INT, default: 1 },
         balloon_color: { type: ParameterType.STRING, default: "orange" },
         max_pumps: { type: ParameterType.INT, default: 8 },
-        threshold: { type: ParameterType.INT, default: 1 }
+        granularity: { type: ParameterType.STRING, default: "high" },
+        granularity_k: { type: ParameterType.INT, default: 50 },
+        base_reward_per_effective_step: { type: ParameterType.FLOAT, default: 5 },
+        pumps_per_click: { type: ParameterType.FLOAT, default: 0.1 },
+        block_index: { type: ParameterType.INT, default: 1 },
+        block_order: { type: ParameterType.STRING, default: "" },
+        subject_number: { type: ParameterType.INT, default: 0 },
+        design: { type: ParameterType.STRING, default: "within_subjects" },
+        balance_rule: { type: ParameterType.STRING, default: "" }
       }
     };
 
@@ -95,14 +213,17 @@
       let cashedOut = false;
       let trialEarning = 0;
       let locked = false;
+      const pumpLabel = money(trial.pumps_per_click);
 
       display_element.innerHTML = `
         <div class="bart-wrapper">
           <div class="bart-top">
-            <div>试次：${trial.trial_index_global}/${trial.total_trials}</div>
-            <div>当前气球：${getColorName(trial.balloon_color)}</div>
+            <div>被试内 · 第 ${trial.block_index}/2 部分 · ${getGranularityLabel(trial.granularity)}</div>
+            <div>编号 <strong>${trial.subject_number}</strong> · 区块顺序 <code>${trial.block_order}</code></div>
+            <div>试次：${trial.trial_index_in_block}/${trial.total_trials_in_block}（总序 ${trial.trial_index_global}/42）</div>
+            <div>当前气球：${getColorName(trial.balloon_color)}（仅颜色不同 · 爆炸上限均为 <strong>${trial.max_pumps}</strong> 次充气）</div>
             <div>本气球收益：<span id="current-earning">${money(0)}</span></div>
-            <div>总收益：<span id="total-earning">${money(totalEarnings)}</span></div>
+            <div>累计总收益（本部分）：<span id="total-earning">${money(totalEarnings)}</span></div>
           </div>
           <div class="bart-main">
             <div class="balloon-stage">
@@ -110,7 +231,7 @@
             </div>
             <div id="status" class="bart-status">点击“充气”开始本试次</div>
             <div class="bart-controls">
-              <button id="pump-btn" class="bart-btn btn-pump">充气 (+$0.05)</button>
+              <button id="pump-btn" class="bart-btn btn-pump">充气 (+${pumpLabel})</button>
               <button id="cash-btn" class="bart-btn btn-cash">收账</button>
             </div>
           </div>
@@ -124,6 +245,7 @@
       const currentEarningEl = display_element.querySelector("#current-earning");
       const totalEarningEl = display_element.querySelector("#total-earning");
 
+      /** 视觉缩放按「点击次数」计，避免高粒度下 pumps/k 导致每泵增量过小、看起来不膨胀 */
       function refreshBalloonScale() {
         const scale = Math.min(
           CONFIG.maxScale,
@@ -149,10 +271,20 @@
         const data = {
           task: "bart_trial",
           subject_id: subjectId,
+          subject_number: trial.subject_number,
+          design: trial.design,
+          balance_rule: trial.balance_rule,
           trial_index: trial.trial_index_global,
+          trial_index_in_block: trial.trial_index_in_block,
+          block_index: trial.block_index,
+          block_order: trial.block_order,
+          granularity: trial.granularity,
+          granularity_k: trial.granularity_k,
+          base_reward_per_effective_step: trial.base_reward_per_effective_step,
+          pumps_per_click: trial.pumps_per_click,
           balloon_color: trial.balloon_color,
           risk_type: trial.max_pumps,
-          threshold: trial.threshold,
+          explosion_model: "uniform_1_M",
           pumps,
           exploded,
           cashed_out: cashedOut,
@@ -174,11 +306,12 @@
         pumpRts.push(Number((now - trialStart).toFixed(2)));
 
         pumps += 1;
-        trialEarning += CONFIG.pumpsPerClick;
+        trialEarning += trial.pumps_per_click;
         refreshBalloonScale();
         currentEarningEl.textContent = money(trialEarning);
 
-        if (pumps >= trial.threshold) {
+        const M = trial.max_pumps;
+        if (shouldExplodeAfterPump(pumps, M)) {
           exploded = true;
           trialEarning = 0;
           currentEarningEl.textContent = money(0);
@@ -203,9 +336,9 @@
     }
   }
 
-  function buildSummaryHtml() {
-    const totalPumps = bartResults.reduce((sum, r) => sum + r.pumps, 0);
-    const nonExploded = bartResults.filter((r) => !r.exploded);
+  function summarizeBartTrials(rows) {
+    const totalPumps = rows.reduce((sum, r) => sum + r.pumps, 0);
+    const nonExploded = rows.filter((r) => !r.exploded);
     const adjustedPumps =
       nonExploded.length > 0
         ? Number(
@@ -214,18 +347,35 @@
             ).toFixed(2)
           )
         : 0;
-    const explosionCount = bartResults.filter((r) => r.exploded).length;
+    const explosionCount = rows.filter((r) => r.exploded).length;
+    const blockEarning = rows.reduce((sum, r) => {
+      if (r.exploded) return sum;
+      return sum + (r.trial_earning || 0);
+    }, 0);
+    return { totalPumps, adjustedPumps, explosionCount, blockEarning };
+  }
+
+  function buildSummaryHtml() {
+    const trials = bartResults.filter((r) => r.task === "bart_trial");
+    const b1 = trials.filter((r) => r.block_index === 1);
+    const b2 = trials.filter((r) => r.block_index === 2);
+    const s1 = summarizeBartTrials(b1);
+    const s2 = summarizeBartTrials(b2);
+    const all = summarizeBartTrials(trials);
+    const g1 = b1[0]?.granularity ?? "";
+    const g2 = b2[0]?.granularity ?? "";
 
     return `
       <div class="bart-wrapper">
         <div class="bart-main">
           <div class="summary">
             <h2>实验完成</h2>
-            <p>被试编号：<strong>${subjectId}</strong></p>
-            <p>充气总次数（Total Pumps）：<strong>${totalPumps}</strong></p>
-            <p>调整充气次数（Adjusted Pumps）：<strong>${adjustedPumps}</strong></p>
-            <p>气球爆炸次数（Explosion Count）：<strong>${explosionCount}</strong></p>
-            <p>总收益（Total Earnings）：<strong>${money(totalEarnings)}</strong></p>
+            <p>被试编号：<strong>${subjectId}</strong>（数字编号 <strong>${subjectNumber}</strong>）</p>
+            <p>设计：<strong>被试内</strong>（两 block）；区块顺序：<strong>${blockOrderLabel}</strong></p>
+            <p>第 1 部分：<strong>${getGranularityLabel(g1)}</strong> · 充气 <strong>${s1.totalPumps}</strong> · 爆炸 <strong>${s1.explosionCount}</strong> · 调整充气 <strong>${s1.adjustedPumps}</strong> · 本部分收益 <strong>${money(s1.blockEarning)}</strong></p>
+            <p>第 2 部分：<strong>${getGranularityLabel(g2)}</strong> · 充气 <strong>${s2.totalPumps}</strong> · 爆炸 <strong>${s2.explosionCount}</strong> · 调整充气 <strong>${s2.adjustedPumps}</strong> · 本部分收益 <strong>${money(s2.blockEarning)}</strong></p>
+            <p>全程合并：充气总次数 <strong>${all.totalPumps}</strong>；调整充气 <strong>${all.adjustedPumps}</strong>；爆炸 <strong>${all.explosionCount}</strong></p>
+            <p>当前累计总收益（以最后一部分为准）：<strong>${money(totalEarnings)}</strong></p>
             <div class="bart-controls">
               <button id="download-csv" class="bart-btn btn-download">下载 CSV 数据</button>
               <button id="finish-exp" class="bart-btn btn-finish">结束实验</button>
@@ -236,53 +386,540 @@
     `;
   }
 
+  const CSV_HEADERS = [
+    "subject_id",
+    "subject_number",
+    "design",
+    "balance_rule",
+    "task",
+    "block_index",
+    "block_order",
+    "granularity",
+    "granularity_k",
+    "base_reward_per_effective_step",
+    "trial_index",
+    "trial_index_in_block",
+    "balloon_color",
+    "risk_type",
+    "explosion_model",
+    "pumps_per_click",
+    "pumps",
+    "exploded",
+    "cashed_out",
+    "trial_earning",
+    "total_earning_after_trial",
+    "adjusted_pumps",
+    "end_reason",
+    "measure_phase",
+    ...STRESS_S_KEYS,
+    ...TRAIT_T_KEYS,
+    "anxiety_rating",
+    "difficulty_rating",
+    "stim_attract_01",
+    "stim_attract_5",
+    "rt_summary",
+    "rt"
+  ];
+
   function toCsv(rows) {
-    const headers = [
-      "subject_id",
-      "trial_index",
-      "balloon_color",
-      "risk_type",
-      "threshold",
-      "pumps",
-      "exploded",
-      "cashed_out",
-      "trial_earning",
-      "total_earning_after_trial",
-      "adjusted_pumps",
-      "end_reason",
-      "rt_summary",
-      "rt"
-    ];
     const esc = (v) => `"${String(v ?? "").replaceAll('"', '""')}"`;
-    const lines = [headers.join(",")];
+    const lines = [CSV_HEADERS.join(",")];
     rows.forEach((row) => {
-      lines.push(headers.map((h) => esc(row[h])).join(","));
+      lines.push(CSV_HEADERS.map((h) => esc(row[h])).join(","));
     });
     return lines.join("\n");
   }
+
+  function rowForCsv(r) {
+    if (r.task === "bart_trait_scale") {
+      return {
+        subject_id: r.subject_id,
+        subject_number: r.subject_number,
+        design: r.design,
+        balance_rule: r.balance_rule ?? "",
+        task: r.task,
+        block_index: r.block_index ?? "",
+        block_order: r.block_order,
+        granularity: r.granularity ?? "",
+        granularity_k: r.granularity_k ?? "",
+        base_reward_per_effective_step: r.base_reward_per_effective_step ?? "",
+        trial_index: "",
+        trial_index_in_block: "",
+        balloon_color: "",
+        risk_type: "",
+        explosion_model: "",
+        pumps_per_click: "",
+        pumps: "",
+        exploded: "",
+        cashed_out: "",
+        trial_earning: "",
+        total_earning_after_trial: "",
+        adjusted_pumps: "",
+        end_reason: "",
+        measure_phase: "",
+        ...EMPTY_STRESS_FIELDS,
+        ...TRAIT_T_KEYS.reduce((acc, k) => {
+          acc[k] = r[k] ?? "";
+          return acc;
+        }, {}),
+        ...EMPTY_STIM_FIELDS,
+        anxiety_rating: "",
+        difficulty_rating: "",
+        rt_summary: "",
+        rt: r.rt ?? ""
+      };
+    }
+    if (r.task === "bart_stress_scale") {
+      return {
+        subject_id: r.subject_id,
+        subject_number: r.subject_number,
+        design: r.design,
+        balance_rule: r.balance_rule ?? "",
+        task: r.task,
+        block_index: r.block_index,
+        block_order: r.block_order,
+        granularity: r.granularity ?? "",
+        granularity_k: r.granularity_k ?? "",
+        base_reward_per_effective_step: r.base_reward_per_effective_step ?? "",
+        trial_index: "",
+        trial_index_in_block: "",
+        balloon_color: "",
+        risk_type: "",
+        explosion_model: "",
+        pumps_per_click: "",
+        pumps: "",
+        exploded: "",
+        cashed_out: "",
+        trial_earning: "",
+        total_earning_after_trial: "",
+        adjusted_pumps: "",
+        end_reason: "",
+        measure_phase: r.measure_phase,
+        ...STRESS_S_KEYS.reduce((acc, k) => {
+          acc[k] = r[k] ?? "";
+          return acc;
+        }, {}),
+        ...EMPTY_TRAIT_FIELDS,
+        ...EMPTY_STIM_FIELDS,
+        anxiety_rating: "",
+        difficulty_rating: "",
+        rt_summary: "",
+        rt: r.rt ?? ""
+      };
+    }
+    if (r.task === "bart_block_self_report") {
+      return {
+        subject_id: r.subject_id,
+        subject_number: r.subject_number,
+        design: r.design,
+        balance_rule: r.balance_rule ?? "",
+        task: r.task,
+        block_index: r.block_index,
+        block_order: r.block_order,
+        granularity: r.granularity,
+        granularity_k: r.granularity_k,
+        base_reward_per_effective_step: r.base_reward_per_effective_step,
+        trial_index: "",
+        trial_index_in_block: "",
+        balloon_color: "",
+        risk_type: "",
+        explosion_model: "",
+        pumps_per_click: "",
+        pumps: "",
+        exploded: "",
+        cashed_out: "",
+        trial_earning: "",
+        total_earning_after_trial: "",
+        adjusted_pumps: "",
+        end_reason: "",
+        measure_phase: "",
+        ...EMPTY_STRESS_FIELDS,
+        ...EMPTY_TRAIT_FIELDS,
+        ...EMPTY_STIM_FIELDS,
+        anxiety_rating: r.anxiety_rating,
+        difficulty_rating: r.difficulty_rating,
+        rt_summary: "",
+        rt: r.rt ?? ""
+      };
+    }
+    if (r.task === "bart_stimulus_rating") {
+      return {
+        subject_id: r.subject_id,
+        subject_number: r.subject_number,
+        design: r.design,
+        balance_rule: r.balance_rule ?? "",
+        task: r.task,
+        block_index: r.block_index ?? "",
+        block_order: r.block_order,
+        granularity: r.granularity ?? "",
+        granularity_k: r.granularity_k ?? "",
+        base_reward_per_effective_step: r.base_reward_per_effective_step ?? "",
+        trial_index: "",
+        trial_index_in_block: "",
+        balloon_color: "",
+        risk_type: "",
+        explosion_model: "",
+        pumps_per_click: "",
+        pumps: "",
+        exploded: "",
+        cashed_out: "",
+        trial_earning: "",
+        total_earning_after_trial: "",
+        adjusted_pumps: "",
+        end_reason: "",
+        measure_phase: "",
+        ...EMPTY_STRESS_FIELDS,
+        ...EMPTY_TRAIT_FIELDS,
+        stim_attract_01: r.stim_attract_01 ?? "",
+        stim_attract_5: r.stim_attract_5 ?? "",
+        anxiety_rating: "",
+        difficulty_rating: "",
+        rt_summary: "",
+        rt: r.rt ?? ""
+      };
+    }
+    return {
+      subject_id: r.subject_id,
+      subject_number: r.subject_number,
+      design: r.design,
+      balance_rule: r.balance_rule ?? "",
+      task: r.task,
+      block_index: r.block_index,
+      block_order: r.block_order,
+      granularity: r.granularity,
+      granularity_k: r.granularity_k,
+      base_reward_per_effective_step: r.base_reward_per_effective_step,
+      trial_index: r.trial_index,
+      trial_index_in_block: r.trial_index_in_block,
+      balloon_color: r.balloon_color,
+      risk_type: r.risk_type,
+      explosion_model: r.explosion_model,
+      pumps_per_click: r.pumps_per_click,
+      pumps: r.pumps,
+      exploded: r.exploded,
+      cashed_out: r.cashed_out,
+      trial_earning: r.trial_earning,
+      total_earning_after_trial: r.total_earning_after_trial,
+      adjusted_pumps: r.adjusted_pumps,
+      end_reason: r.end_reason,
+      measure_phase: "",
+      ...EMPTY_STRESS_FIELDS,
+      ...EMPTY_TRAIT_FIELDS,
+      ...EMPTY_STIM_FIELDS,
+      anxiety_rating: "",
+      difficulty_rating: "",
+      rt_summary: r.rt_summary,
+      rt: r.rt
+    };
+  }
+
+  const likert10 = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"];
+
+  const STRESS_PHASE_COPY = {
+    pre_block_1: "第 1 部分 <strong>开始前</strong>（尚未进行该部分 BART）",
+    post_block_1: "第 1 部分 <strong>刚结束</strong>",
+    pre_block_2: "第 2 部分 <strong>开始前</strong>（休息后、尚未进行该部分 BART）",
+    post_block_2: "第 2 部分 <strong>刚结束</strong>"
+  };
+
+  /** 与《量表,md》一致的评定说明（HTML） */
+  const STRESS_RATING_INSTRUCTION =
+    "采用<strong>1–4</strong>级评定：1—几乎没有；2—有些；3—中等程度或是经常有；4—非常明显或几乎总是如此。";
+
+  const likert4 = ["1", "2", "3", "4"];
+
+  /**
+   * @param {"pre_block_1"|"post_block_1"|"pre_block_2"|"post_block_2"} phase
+   * @param {number} blockIndex 1 或 2（用于数据归档）
+   */
+  function makeStressTimeline(phase, blockIndex) {
+    const phaseIntro = STRESS_PHASE_COPY[phase];
+    const answers = new Array(STRESS_SCALE_ITEMS.length).fill(null);
+    let t0 = null;
+    const n = STRESS_SCALE_ITEMS.length;
+
+    return STRESS_SCALE_ITEMS.map((itemText, idx) => ({
+      type: jsPsychHtmlButtonResponse,
+      stimulus: `
+      <div style="max-width:640px;margin:0 auto;line-height:1.85;text-align:left;">
+        <p><strong>压力感受量表</strong>（${phaseIntro}）<span style="color:#555;"> · 第 ${idx + 1} / ${n} 题</span></p>
+        <p>${STRESS_RATING_INSTRUCTION}</p>
+        <p style="margin-top:1em;"><strong>${String(idx + 1).padStart(2, "0")}</strong> ${itemText}</p>
+      </div>`,
+      choices: likert4,
+      on_load() {
+        if (idx === 0) t0 = performance.now();
+      },
+      on_finish(data) {
+        answers[idx] = data.response + 1;
+        if (idx === n - 1) {
+          const row = {
+            task: "bart_stress_scale",
+            subject_id: subjectId,
+            subject_number: subjectNumber,
+            design: DESIGN,
+            balance_rule: "n_a",
+            block_index: blockIndex,
+            block_order: blockOrderLabel,
+            measure_phase: phase,
+            ...Object.fromEntries(STRESS_S_KEYS.map((k, i) => [k, answers[i]])),
+            rt: t0 != null ? Number((performance.now() - t0).toFixed(2)) : null
+          };
+          bartResults.push(row);
+        }
+      }
+    }));
+  }
+
+  /**
+   * 实验正式开始（BART 指导语）前：与《特质量表.md》一致的特质问卷。
+   */
+  function makeTraitTimeline() {
+    const answers = new Array(TRAIT_SCALE_ITEMS.length).fill(null);
+    let t0 = null;
+    const n = TRAIT_SCALE_ITEMS.length;
+
+    return TRAIT_SCALE_ITEMS.map((itemText, idx) => ({
+      type: jsPsychHtmlButtonResponse,
+      stimulus: `
+      <div style="max-width:640px;margin:0 auto;line-height:1.85;text-align:left;">
+        <p><strong>特质问卷</strong>（实验开始前）<span style="color:#555;"> · 第 ${idx + 1} / ${n} 题</span></p>
+        <p>${TRAIT_RATING_INSTRUCTION}</p>
+        <p style="margin-top:1em;"><strong>${String(idx + 1).padStart(2, "0")}</strong> ${itemText}</p>
+      </div>`,
+      choices: likert4,
+      on_load() {
+        if (idx === 0) t0 = performance.now();
+      },
+      on_finish(data) {
+        answers[idx] = data.response + 1;
+        if (idx === n - 1) {
+          const row = {
+            task: "bart_trait_scale",
+            subject_id: subjectId,
+            subject_number: subjectNumber,
+            design: DESIGN,
+            balance_rule: "n_a",
+            block_index: 0,
+            block_order: blockOrderLabel,
+            ...Object.fromEntries(TRAIT_T_KEYS.map((k, i) => [k, answers[i]])),
+            rt: t0 != null ? Number((performance.now() - t0).toFixed(2)) : null
+          };
+          bartResults.push(row);
+        }
+      }
+    }));
+  }
+
+  function makeSelfReportTimeline() {
+    let anxietyRating = null;
+    let reportStart = null;
+    return [
+      {
+        type: jsPsychHtmlButtonResponse,
+        stimulus: `
+      <div style="max-width:560px;margin:0 auto;line-height:1.8;text-align:left;">
+        <p>BART 任务已全部结束。</p>
+        <p>请根据<strong>此刻</strong>感受选择：你当前的紧张/焦虑程度如何？（1 = 完全不焦虑，10 = 非常焦虑）</p>
+      </div>`,
+        choices: likert10,
+        on_load() {
+          reportStart = performance.now();
+        },
+        on_finish(data) {
+          anxietyRating = data.response + 1;
+        }
+      },
+      {
+        type: jsPsychHtmlButtonResponse,
+        stimulus: `
+      <div style="max-width:560px;margin:0 auto;line-height:1.8;text-align:left;">
+        <p>请根据<strong>此刻</strong>感受选择：你觉得刚才的决策难度如何？（1 = 非常容易，10 = 非常困难）</p>
+      </div>`,
+        choices: likert10,
+        on_finish(data) {
+          const row = {
+            task: "bart_block_self_report",
+            subject_id: subjectId,
+            subject_number: subjectNumber,
+            design: DESIGN,
+            balance_rule: "n_a",
+            block_index: 0,
+            block_order: blockOrderLabel,
+            granularity: "",
+            granularity_k: CONFIG.granularityK,
+            base_reward_per_effective_step: CONFIG.baseRewardPerEffectiveStep,
+            anxiety_rating: anxietyRating,
+            difficulty_rating: data.response + 1,
+            rt:
+              reportStart != null
+                ? Number((performance.now() - reportStart).toFixed(2))
+                : null
+          };
+          bartResults.push(row);
+        }
+      }
+    ];
+  }
+
+  /**
+   * BART 与焦虑/难度自评之后、结束页之前：与《刺激评定量表.md》一致的两题（1–4）。
+   */
+  function makeStimulusRatingTimeline() {
+    let attract01 = null;
+    let t0 = null;
+    return [
+      {
+        type: jsPsychHtmlButtonResponse,
+        stimulus: `
+      <div style="max-width:640px;margin:0 auto;line-height:1.85;text-align:left;">
+        <p><strong>刺激评定</strong>（实验全部结束后）<span style="color:#555;"> · 第 1 / 2 题</span></p>
+        <p>${STIM_RATING_INSTRUCTION}</p>
+        <p style="margin-top:1em;">你觉得 <strong>0.1 元</strong>的奖励对你的吸引力有多大？</p>
+      </div>`,
+        choices: likert4,
+        on_load() {
+          t0 = performance.now();
+        },
+        on_finish(data) {
+          attract01 = data.response + 1;
+        }
+      },
+      {
+        type: jsPsychHtmlButtonResponse,
+        stimulus: `
+      <div style="max-width:640px;margin:0 auto;line-height:1.85;text-align:left;">
+        <p><strong>刺激评定</strong>（实验全部结束后）<span style="color:#555;"> · 第 2 / 2 题</span></p>
+        <p>${STIM_RATING_INSTRUCTION}</p>
+        <p style="margin-top:1em;">你觉得 <strong>5 元</strong>的奖励对你的吸引力有多大？</p>
+      </div>`,
+        choices: likert4,
+        on_finish(data) {
+          const row = {
+            task: "bart_stimulus_rating",
+            subject_id: subjectId,
+            subject_number: subjectNumber,
+            design: DESIGN,
+            balance_rule: "n_a",
+            block_index: 0,
+            block_order: blockOrderLabel,
+            stim_attract_01: attract01,
+            stim_attract_5: data.response + 1,
+            rt:
+              t0 != null ? Number((performance.now() - t0).toFixed(2)) : null
+          };
+          bartResults.push(row);
+        }
+      }
+    ];
+  }
+
+  function blockIntroStimulus(granularity, blockIndex) {
+    const isHigh = granularity === "high";
+    const stepMoney = isHigh
+      ? money(CONFIG.baseRewardPerEffectiveStep / CONFIG.granularityK)
+      : money(CONFIG.baseRewardPerEffectiveStep);
+    const label = getGranularityLabel(granularity);
+    const ruleLine = isHigh
+      ? `每点击一次「充气」，收益增加 <strong>${stepMoney}</strong>。同一气球上，爆炸前往往需要更多次点击；单步金额较小、风险感在时间上更分散。`
+      : `每点击一次「充气」，收益增加 <strong>${stepMoney}</strong>。同一气球上，爆炸前点击次数更少；单步金额较大、每一步的得失更显著。`;
+    return `
+      <div style="max-width:780px;margin:0 auto;text-align:left;line-height:1.8;">
+        <h3>第 ${blockIndex}/2 部分：${label}</h3>
+        <p>本部分共 <strong>21</strong> 个气球（橙、黄、蓝各 7 个，顺序已随机打乱）。本部分总收益从 <strong>$0.00</strong> 重新累计。</p>
+        <p>${ruleLine}</p>
+        <p>气球仅有<strong>橙 / 黄 / 蓝</strong>三色区别；每个气球的爆炸上限均为 <strong>M = ${CONFIG.explosionCapM}</strong>。爆炸时机等价于在 <strong>1～M</strong> 之间均匀随机：在第 <strong>k</strong> 次充气后若尚未爆炸，则本步爆炸概率为 <strong>1/(M−k+1)</strong>（第 1 次为 1/${CONFIG.explosionCapM}；第 ${CONFIG.explosionCapM} 次必爆）。你可随时「收账」；若爆炸，本气球收益清零。</p>
+      </div>`;
+  }
+
+  function buildBartBlockTimeline({
+    granularity,
+    blockIndex,
+    blockOrderLabel: orderLabel,
+    startGlobalIndex
+  }) {
+    const trials = buildTrials(granularity);
+    const pumpsPerClick =
+      granularity === "high"
+        ? CONFIG.baseRewardPerEffectiveStep / CONFIG.granularityK
+        : CONFIG.baseRewardPerEffectiveStep;
+
+    const transition = {
+      type: jsPsychHtmlButtonResponse,
+      stimulus: blockIntroStimulus(granularity, blockIndex),
+      choices: ["我理解了，开始本部分"],
+      on_load() {
+        totalEarnings = 0;
+      }
+    };
+
+    const bartTrials = trials.map((t, idx) => ({
+      type: BartPlugin,
+      trial_index_global: startGlobalIndex + idx,
+      trial_index_in_block: idx + 1,
+      total_trials_in_block: trials.length,
+      balloon_color: t.color,
+      max_pumps: t.maxPumps,
+      granularity,
+      granularity_k: CONFIG.granularityK,
+      base_reward_per_effective_step: CONFIG.baseRewardPerEffectiveStep,
+      pumps_per_click: pumpsPerClick,
+      block_index: blockIndex,
+      block_order: orderLabel,
+      subject_number: subjectNumber,
+      design: DESIGN,
+      balance_rule: "n_a"
+    }));
+
+    return [transition, ...bartTrials];
+  }
+
+  const restBetweenBlocks = {
+    type: jsPsychHtmlButtonResponse,
+    stimulus: `
+      <div style="max-width:640px;margin:0 auto;line-height:1.9;text-align:left;">
+        <h3>休息</h3>
+        <p>第 1 部分已结束。请<strong>稍作休息</strong>（活动身体、喝水、放松眼睛）。准备好后继续第 2 部分。</p>
+      </div>`,
+    choices: ["休息结束，继续实验"]
+  };
 
   const intro = {
     type: jsPsychHtmlButtonResponse,
     stimulus: `
       <div style="max-width:780px;margin:0 auto;text-align:left;line-height:1.8;">
-        <h2>BART 风险决策偏好实验</h2>
-        <p>你将看到不同颜色的气球。每点击一次“充气”，当前气球收益增加 <strong>$0.05</strong>。</p>
-        <p>你可以随时点击“收账”把当前收益累计到总收益；若气球爆炸，本气球收益清零。</p>
-        <p>实验共 30 个气球，请尽量获得更高总收益。</p>
-      </div>
-    `,
+        <h2>BART：决策粒度与风险决策（被试内）</h2>
+        <p>你已完成<strong>特质问卷</strong>（《特质量表.md》，20 题 1–4 级）。本实验共<strong>两个部分</strong>，你将<strong>先后</strong>完成高粒度（细、小额多步）与低粒度（粗、大额少步）两种充气规则，<strong>顺序已随机</strong>（当前顺序：<strong>${blockOrderLabel}</strong>）。</p>
+        <p>每部分 <strong>21</strong> 个气球：橙、黄、蓝各 7 个，试次顺序在部分内随机打乱；三色仅颜色不同，爆炸规则相同（<strong>M = ${CONFIG.explosionCapM}</strong>，均匀随机爆炸点）。</p>
+        <p>每部分前后设有<strong>压力感受量表</strong>（与《量表,md》一致：<strong>20</strong> 题，<strong>1–4</strong> 级）；两部分之间可<strong>休息</strong>。全部 BART 结束后先有焦虑/难度问卷（各 <strong>1–10</strong>），最后在汇总页前有《刺激评定量表》<strong>2</strong> 题（<strong>1–4</strong> 级：0.1 元与 5 元奖励的吸引力）。请尽量提高<strong>当前部分</strong>的总收益。</p>
+        <p>你的编号：<strong>${subjectNumber}</strong>（用于数据归档）。</p>
+      </div>`,
     choices: ["开始实验"]
   };
 
-  const trials = buildTrials();
-  const bartTimeline = trials.map((t, idx) => ({
-    type: BartPlugin,
-    trial_index_global: idx + 1,
-    total_trials: trials.length,
-    balloon_color: t.color,
-    max_pumps: t.maxPumps,
-    threshold: t.threshold
-  }));
+  const timeline = [
+    ...makeTraitTimeline(),
+    intro,
+    ...makeStressTimeline("pre_block_1", 1),
+    ...buildBartBlockTimeline({
+      granularity: blockGranOrder[0],
+      blockIndex: 1,
+      blockOrderLabel,
+      startGlobalIndex: 1
+    }),
+    ...makeStressTimeline("post_block_1", 1),
+    restBetweenBlocks,
+    ...makeStressTimeline("pre_block_2", 2),
+    ...buildBartBlockTimeline({
+      granularity: blockGranOrder[1],
+      blockIndex: 2,
+      blockOrderLabel,
+      startGlobalIndex: 22
+    }),
+    ...makeStressTimeline("post_block_2", 2),
+    ...makeSelfReportTimeline(),
+    ...makeStimulusRatingTimeline()
+  ];
 
   const summaryScreen = {
     type: jsPsychHtmlButtonResponse,
@@ -293,7 +930,7 @@
       const finishBtn = document.querySelector("#finish-exp");
 
       downloadBtn?.addEventListener("click", () => {
-        const csv = toCsv(bartResults);
+        const csv = toCsv(bartResults.map(rowForCsv));
         const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
@@ -309,11 +946,15 @@
         jsPsychInstance.finishTrial({
           task: "bart_summary",
           subject_id: subjectId,
+          subject_number: subjectNumber,
+          design: DESIGN,
+          balance_rule: "n_a",
+          block_order: blockOrderLabel,
           total_earning: Number(totalEarnings.toFixed(2))
         });
       });
     }
   };
 
-  jsPsychInstance.run([intro, ...bartTimeline, summaryScreen]);
+  jsPsychInstance.run([...timeline, summaryScreen]);
 })();
