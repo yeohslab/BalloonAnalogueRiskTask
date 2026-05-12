@@ -150,3 +150,61 @@ body {
 .summary h2 {
   margin-top: 0;
 }
+
+.bart-demo-wrap {
+  max-width: 440px;
+  margin: 0 auto;
+  padding-top: 8px;
+}
+
+.bart-demo-title {
+  font-size: 1.25rem;
+  margin: 0 0 0.5rem;
+}
+
+.bart-demo-hint {
+  color: #4b5563;
+  font-size: 15px;
+  line-height: 1.6;
+  margin: 0 0 1.25rem;
+}
+
+.bart-demo-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.bart-demo-label {
+  font-size: 14px;
+  font-weight: 600;
+  margin-top: 0.65rem;
+  color: #374151;
+}
+
+.bart-demo-input {
+  font-size: 16px;
+  padding: 10px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.bart-demo-genders {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem 1.25rem;
+  margin-top: 0.35rem;
+}
+
+.bart-demo-radio {
+  font-size: 15px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.bart-demo-submit {
+  margin-top: 1rem;
+  align-self: flex-start;
+}

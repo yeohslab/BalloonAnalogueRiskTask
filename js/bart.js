@@ -94,28 +94,8 @@
   const STIM_ATTRACT_KEYS = ["stim_attract_01", "stim_attract_5"];
   const EMPTY_STIM_FIELDS = Object.fromEntries(STIM_ATTRACT_KEYS.map((k) => [k, ""]));
 
-  function readSubjectNumber() {
-    const params = new URLSearchParams(window.location.search || "");
-    for (const key of ["subj", "subject", "id", "sid"]) {
-      const raw = params.get(key);
-      if (raw == null || String(raw).trim() === "") continue;
-      const n = Number.parseInt(String(raw).trim(), 10);
-      if (Number.isFinite(n) && n > 0) return n;
-    }
-    const entered = window.prompt(
-      "请输入被试编号（正整数，仅用于数据归档）。\n也可在网址后加 ?subj=编号 跳过本步。\n留空则随机生成（便于自测）。",
-      ""
-    );
-    if (entered == null) return Math.floor(Math.random() * 99998) + 1;
-    const trimmed = String(entered).trim();
-    if (trimmed === "") return Math.floor(Math.random() * 99998) + 1;
-    const n = Number.parseInt(trimmed, 10);
-    if (Number.isFinite(n) && n > 0) return n;
-    return Math.floor(Math.random() * 99998) + 1;
-  }
-
-  const subjectNumber = readSubjectNumber();
-  const subjectId = `S${subjectNumber}`;
+  let subjectNumber = 0;
+  let subjectId = "";
   let totalEarnings = 0;
   /** BART 试次 + 区块自评，供下载与分析 */
   const bartResults = [];
@@ -130,6 +110,117 @@
 
   const blockGranOrder = shuffle(["high", "low"]);
   const blockOrderLabel = blockGranOrder[0] === "high" ? "high_first" : "low_first";
+
+  function parseSubjectFromUrl() {
+    const params = new URLSearchParams(window.location.search || "");
+    for (const key of ["subj", "subject", "id", "sid"]) {
+      const raw = params.get(key);
+      if (raw == null || String(raw).trim() === "") continue;
+      const n = Number.parseInt(String(raw).trim(), 10);
+      if (Number.isFinite(n) && n > 0) return String(raw).trim();
+    }
+    return "";
+  }
+
+  /** 自出生年月至当前日期的完整月数（用于自报出生年月时的年龄操作化） */
+  function computeAgeMonths(birthYYYYMM) {
+    const m = /^(\d{4})-(\d{2})$/.exec(birthYYYYMM);
+    if (!m) return null;
+    const y = Number(m[1]);
+    const mo = Number(m[2]);
+    if (mo < 1 || mo > 12) return null;
+    const d = new Date();
+    const cm = d.getFullYear() * 12 + d.getMonth() + 1;
+    const bm = y * 12 + mo;
+    const months = cm - bm;
+    return months >= 0 ? months : null;
+  }
+
+  const DEMO_FIELDS = ["birth_month", "gender", "age_months"];
+  const EMPTY_DEMO_FIELDS = Object.fromEntries(DEMO_FIELDS.map((k) => [k, ""]));
+
+  class DemographicsPlugin {
+    constructor(jsPsych) {
+      this.jsPsych = jsPsych;
+    }
+
+    static info = {
+      name: "bart-demographics",
+      parameters: {
+        _pad: { type: ParameterType.INT, default: 0 }
+      }
+    };
+
+    trial(display_element) {
+      const urlPref = parseSubjectFromUrl();
+      display_element.innerHTML = `
+        <div class="bart-wrapper bart-demo-wrap">
+          <h2 class="bart-demo-title">基本信息</h2>
+          <p class="bart-demo-hint">被试编号由<strong>主试</strong>分配并填写；出生年月精确到月；请选择性别。</p>
+          <div class="bart-demo-form">
+            <label class="bart-demo-label" for="bart-subj-num">被试编号</label>
+            <input type="number" id="bart-subj-num" class="bart-demo-input" min="1" step="1" inputmode="numeric" autocomplete="off" />
+            <label class="bart-demo-label" for="bart-birth-month">出生年月</label>
+            <input type="month" id="bart-birth-month" class="bart-demo-input" />
+            <span class="bart-demo-label">性别</span>
+            <div class="bart-demo-genders">
+              <label class="bart-demo-radio"><input type="radio" name="bart-gender" value="男" /> 男</label>
+              <label class="bart-demo-radio"><input type="radio" name="bart-gender" value="女" /> 女</label>
+              <label class="bart-demo-radio"><input type="radio" name="bart-gender" value="其他" /> 其他</label>
+            </div>
+            <button type="button" class="bart-btn bart-demo-submit" id="bart-demo-submit">确认并继续</button>
+          </div>
+        </div>`;
+      const numInput = display_element.querySelector("#bart-subj-num");
+      if (urlPref) {
+        const n = Number.parseInt(urlPref, 10);
+        if (Number.isFinite(n) && n > 0) numInput.value = String(n);
+      }
+      const start = performance.now();
+      display_element.querySelector("#bart-demo-submit").addEventListener("click", () => {
+        const raw = numInput.value.trim();
+        const n = Number.parseInt(raw, 10);
+        if (!Number.isFinite(n) || n <= 0) {
+          window.alert("请填写主试分配的被试编号（正整数）。");
+          return;
+        }
+        const birth = display_element.querySelector("#bart-birth-month").value;
+        if (!birth) {
+          window.alert("请选择出生年月。");
+          return;
+        }
+        const genderEl = display_element.querySelector('input[name="bart-gender"]:checked');
+        if (!genderEl) {
+          window.alert("请选择性别。");
+          return;
+        }
+        subjectNumber = n;
+        subjectId = `S${n}`;
+        const ageM = computeAgeMonths(birth);
+        bartResults.push({
+          task: "bart_demographics",
+          subject_id: subjectId,
+          subject_number: subjectNumber,
+          design: DESIGN,
+          balance_rule: "n_a",
+          block_index: 0,
+          block_order: blockOrderLabel,
+          birth_month: birth,
+          gender: genderEl.value,
+          age_months: ageM != null ? ageM : "",
+          rt: Number((performance.now() - start).toFixed(2))
+        });
+        this.jsPsych.finishTrial({
+          subject_number: subjectNumber,
+          subject_id: subjectId
+        });
+      });
+    }
+  }
+
+  function makeDemographicsTimeline() {
+    return [{ type: DemographicsPlugin }];
+  }
 
   /**
    * 等价于爆炸点 N ~ Uniform{1,…,M}：第 k 次充气后，若尚未爆炸，则本步爆炸概率为 1/(M−k+1)。
@@ -218,12 +309,9 @@
       display_element.innerHTML = `
         <div class="bart-wrapper">
           <div class="bart-top">
-            <div>被试内 · 第 ${trial.block_index}/2 部分 · ${getGranularityLabel(trial.granularity)}</div>
-            <div>编号 <strong>${trial.subject_number}</strong> · 区块顺序 <code>${trial.block_order}</code></div>
-            <div>试次：${trial.trial_index_in_block}/${trial.total_trials_in_block}（总序 ${trial.trial_index_global}/42）</div>
-            <div>当前气球：${getColorName(trial.balloon_color)}（仅颜色不同 · 爆炸上限均为 <strong>${trial.max_pumps}</strong> 次充气）</div>
-            <div>本气球收益：<span id="current-earning">${money(0)}</span></div>
-            <div>累计总收益（本部分）：<span id="total-earning">${money(totalEarnings)}</span></div>
+            <div>第 ${trial.block_index}/2 部分 · ${getGranularityLabel(trial.granularity)} · 试次 ${trial.trial_index_in_block}/${trial.total_trials_in_block}</div>
+            <div>编号 <strong>${trial.subject_number}</strong> · ${getColorName(trial.balloon_color)}气球</div>
+            <div>本气球 <span id="current-earning">${money(0)}</span> · 本部分累计 <span id="total-earning">${money(totalEarnings)}</span></div>
           </div>
           <div class="bart-main">
             <div class="balloon-stage">
@@ -365,12 +453,19 @@
     const g1 = b1[0]?.granularity ?? "";
     const g2 = b2[0]?.granularity ?? "";
 
+    const demo = bartResults.find((r) => r.task === "bart_demographics");
+    const demoLine =
+      demo != null
+        ? `<p>人口学：出生年月 <strong>${demo.birth_month ?? "—"}</strong> · 性别 <strong>${demo.gender ?? "—"}</strong> · 距出生 <strong>${demo.age_months ?? "—"}</strong> 个月</p>`
+        : "";
+
     return `
       <div class="bart-wrapper">
         <div class="bart-main">
           <div class="summary">
             <h2>实验完成</h2>
             <p>被试编号：<strong>${subjectId}</strong>（数字编号 <strong>${subjectNumber}</strong>）</p>
+            ${demoLine}
             <p>设计：<strong>被试内</strong>（两 block）；区块顺序：<strong>${blockOrderLabel}</strong></p>
             <p>第 1 部分：<strong>${getGranularityLabel(g1)}</strong> · 充气 <strong>${s1.totalPumps}</strong> · 爆炸 <strong>${s1.explosionCount}</strong> · 调整充气 <strong>${s1.adjustedPumps}</strong> · 本部分收益 <strong>${money(s1.blockEarning)}</strong></p>
             <p>第 2 部分：<strong>${getGranularityLabel(g2)}</strong> · 充气 <strong>${s2.totalPumps}</strong> · 爆炸 <strong>${s2.explosionCount}</strong> · 调整充气 <strong>${s2.adjustedPumps}</strong> · 本部分收益 <strong>${money(s2.blockEarning)}</strong></p>
@@ -389,6 +484,9 @@
   const CSV_HEADERS = [
     "subject_id",
     "subject_number",
+    "birth_month",
+    "gender",
+    "age_months",
     "design",
     "balance_rule",
     "task",
@@ -431,10 +529,49 @@
   }
 
   function rowForCsv(r) {
+    if (r.task === "bart_demographics") {
+      return {
+        subject_id: r.subject_id,
+        subject_number: r.subject_number,
+        birth_month: r.birth_month ?? "",
+        gender: r.gender ?? "",
+        age_months: r.age_months ?? "",
+        design: r.design,
+        balance_rule: r.balance_rule ?? "",
+        task: r.task,
+        block_index: r.block_index ?? "",
+        block_order: r.block_order,
+        granularity: "",
+        granularity_k: "",
+        base_reward_per_effective_step: "",
+        trial_index: "",
+        trial_index_in_block: "",
+        balloon_color: "",
+        risk_type: "",
+        explosion_model: "",
+        pumps_per_click: "",
+        pumps: "",
+        exploded: "",
+        cashed_out: "",
+        trial_earning: "",
+        total_earning_after_trial: "",
+        adjusted_pumps: "",
+        end_reason: "",
+        measure_phase: "",
+        ...EMPTY_STRESS_FIELDS,
+        ...EMPTY_TRAIT_FIELDS,
+        ...EMPTY_STIM_FIELDS,
+        anxiety_rating: "",
+        difficulty_rating: "",
+        rt_summary: "",
+        rt: r.rt ?? ""
+      };
+    }
     if (r.task === "bart_trait_scale") {
       return {
         subject_id: r.subject_id,
         subject_number: r.subject_number,
+        ...EMPTY_DEMO_FIELDS,
         design: r.design,
         balance_rule: r.balance_rule ?? "",
         task: r.task,
@@ -473,6 +610,7 @@
       return {
         subject_id: r.subject_id,
         subject_number: r.subject_number,
+        ...EMPTY_DEMO_FIELDS,
         design: r.design,
         balance_rule: r.balance_rule ?? "",
         task: r.task,
@@ -511,6 +649,7 @@
       return {
         subject_id: r.subject_id,
         subject_number: r.subject_number,
+        ...EMPTY_DEMO_FIELDS,
         design: r.design,
         balance_rule: r.balance_rule ?? "",
         task: r.task,
@@ -546,6 +685,7 @@
       return {
         subject_id: r.subject_id,
         subject_number: r.subject_number,
+        ...EMPTY_DEMO_FIELDS,
         design: r.design,
         balance_rule: r.balance_rule ?? "",
         task: r.task,
@@ -581,6 +721,7 @@
     return {
       subject_id: r.subject_id,
       subject_number: r.subject_number,
+      ...EMPTY_DEMO_FIELDS,
       design: r.design,
       balance_rule: r.balance_rule ?? "",
       task: r.task,
@@ -820,15 +961,11 @@
       ? money(CONFIG.baseRewardPerEffectiveStep / CONFIG.granularityK)
       : money(CONFIG.baseRewardPerEffectiveStep);
     const label = getGranularityLabel(granularity);
-    const ruleLine = isHigh
-      ? `每点击一次「充气」，收益增加 <strong>${stepMoney}</strong>。同一气球上，爆炸前往往需要更多次点击；单步金额较小、风险感在时间上更分散。`
-      : `每点击一次「充气」，收益增加 <strong>${stepMoney}</strong>。同一气球上，爆炸前点击次数更少；单步金额较大、每一步的得失更显著。`;
     return `
-      <div style="max-width:780px;margin:0 auto;text-align:left;line-height:1.8;">
-        <h3>第 ${blockIndex}/2 部分：${label}</h3>
-        <p>本部分共 <strong>21</strong> 个气球（橙、黄、蓝各 7 个，顺序已随机打乱）。本部分总收益从 <strong>$0.00</strong> 重新累计。</p>
-        <p>${ruleLine}</p>
-        <p>气球仅有<strong>橙 / 黄 / 蓝</strong>三色区别；每个气球的爆炸上限均为 <strong>M = ${CONFIG.explosionCapM}</strong>。爆炸时机等价于在 <strong>1～M</strong> 之间均匀随机：在第 <strong>k</strong> 次充气后若尚未爆炸，则本步爆炸概率为 <strong>1/(M−k+1)</strong>（第 1 次为 1/${CONFIG.explosionCapM}；第 ${CONFIG.explosionCapM} 次必爆）。你可随时「收账」；若爆炸，本气球收益清零。</p>
+      <div style="max-width:640px;margin:0 auto;text-align:left;line-height:1.75;">
+        <h3 style="margin-top:0;">第 ${blockIndex}/2 部分 · ${label}</h3>
+        <p>单次充气 <strong>${stepMoney}</strong>；本部分 <strong>21</strong> 试次（橙/黄/蓝各 7，顺序随机），本部分收益从 <strong>$0.00</strong> 重计。</p>
+        <p>可随时<strong>收账</strong>；若<strong>爆炸</strong>则本气球收益清零。<strong>M = ${CONFIG.explosionCapM}</strong>，爆炸点在 1～M 上均匀随机（第 k 次后未爆则本步概率 1/(M−k+1)）。</p>
       </div>`;
   }
 
@@ -884,22 +1021,9 @@
     choices: ["休息结束，继续实验"]
   };
 
-  const intro = {
-    type: jsPsychHtmlButtonResponse,
-    stimulus: `
-      <div style="max-width:780px;margin:0 auto;text-align:left;line-height:1.8;">
-        <h2>BART：决策粒度与风险决策（被试内）</h2>
-        <p>你已完成<strong>特质问卷</strong>（《特质量表.md》，20 题 1–4 级）。本实验共<strong>两个部分</strong>，你将<strong>先后</strong>完成高粒度（细、小额多步）与低粒度（粗、大额少步）两种充气规则，<strong>顺序已随机</strong>（当前顺序：<strong>${blockOrderLabel}</strong>）。</p>
-        <p>每部分 <strong>21</strong> 个气球：橙、黄、蓝各 7 个，试次顺序在部分内随机打乱；三色仅颜色不同，爆炸规则相同（<strong>M = ${CONFIG.explosionCapM}</strong>，均匀随机爆炸点）。</p>
-        <p>每部分前后设有<strong>压力感受量表</strong>（与《量表,md》一致：<strong>20</strong> 题，<strong>1–4</strong> 级）；两部分之间可<strong>休息</strong>。全部 BART 结束后先有焦虑/难度问卷（各 <strong>1–10</strong>），最后在汇总页前有《刺激评定量表》<strong>2</strong> 题（<strong>1–4</strong> 级：0.1 元与 5 元奖励的吸引力）。请尽量提高<strong>当前部分</strong>的总收益。</p>
-        <p>你的编号：<strong>${subjectNumber}</strong>（用于数据归档）。</p>
-      </div>`,
-    choices: ["开始实验"]
-  };
-
   const timeline = [
+    ...makeDemographicsTimeline(),
     ...makeTraitTimeline(),
-    intro,
     ...makeStressTimeline("pre_block_1", 1),
     ...buildBartBlockTimeline({
       granularity: blockGranOrder[0],
