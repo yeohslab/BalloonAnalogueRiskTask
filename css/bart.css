@@ -208,3 +208,111 @@ body {
   margin-top: 1rem;
   align-self: flex-start;
 }
+
+/* 单页量表：抵消 jsPsych 全局居中（.jspsych-content text-align:center、flex 链路上的 margin:auto / align-items） */
+.jspsych-display-element:has(.bart-scale-page) {
+  align-items: stretch;
+}
+
+.jspsych-content-wrapper:has(.bart-scale-page) {
+  justify-content: flex-start;
+  align-items: flex-start;
+  margin-left: 0;
+  margin-right: 0;
+  width: 100%;
+}
+
+.jspsych-content.bart-scale-trial,
+.jspsych-content:has(.bart-scale-page) {
+  text-align: left !important;
+  margin-left: clamp(0.5rem, 3vw, 1.5rem) !important;
+  margin-right: auto !important;
+  width: 100%;
+  max-width: min(56rem, 96vw);
+}
+
+/* 单页 1–4 量表（T / S）：与视口左边保留间距，正文强制左对齐 */
+.bart-scale-page {
+  max-height: min(92vh, 900px);
+  overflow-y: auto;
+  width: 100%;
+  box-sizing: border-box;
+  text-align: left !important;
+  padding-left: clamp(1.25rem, 5vw, 3rem);
+  padding-right: clamp(1rem, 3vw, 2rem);
+}
+
+.bart-scale-page p,
+.bart-scale-page .bart-scale-title,
+.bart-scale-page .bart-scale-q {
+  text-align: left !important;
+}
+
+/* 避免全局 .bart-wrapper { margin: 0 auto } 把整块量表卡片水平居中 */
+.bart-wrapper.bart-scale-page {
+  margin-left: 0;
+  margin-right: auto;
+  max-width: 52rem;
+}
+
+.bart-scale-inner {
+  max-width: 52rem;
+  margin: 0;
+  line-height: 1.75;
+  text-align: left;
+}
+
+.bart-scale-title {
+  font-size: 1.1rem;
+  margin: 0 0 0.75rem;
+  font-weight: 700;
+  text-align: left;
+}
+
+.bart-scale-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 0;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.bart-scale-q {
+  font-size: 15px;
+  text-align: left;
+  width: 100%;
+}
+
+.bart-scale-num {
+  font-weight: 700;
+  margin-right: 0.25em;
+}
+
+.bart-scale-likert {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  justify-content: flex-start;
+  align-items: center;
+}
+
+.bart-scale-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 14px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.bart-scale-opt input {
+  margin: 0;
+  cursor: pointer;
+}
+
+.bart-scale-submit-wrap {
+  margin-top: 1.25rem;
+  padding-bottom: 0.5rem;
+}

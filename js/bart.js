@@ -80,6 +80,23 @@
   const TRAIT_RATING_INSTRUCTION =
     "采用<strong>1–4</strong>级评定：1—几乎没有；2—有些；3—中等程度或是经常有；4—非常明显或几乎总是如此。";
 
+  /** 与《特质状态量表T.md》一致的卷首说明（首题上方展示） */
+  const TRAIT_SCALE_PREAMBLE_HTML = `<p>下面是一组描述人们日常感受的句子。请阅读每一个句子，然后根据你平时的、一贯的感受，选择最符合你的选项。</p>
+        <p>答案没有对错或好坏之分，请根据你的真实感觉诚实地作答。请在每个句子后面选择:</p>`;
+
+  /** 与《特质状态量表S.md》一致的卷首说明（每轮 S 量表首题上方展示） */
+  const STRESS_SCALE_PREAMBLE_HTML = `<p>下面是一组描述此时此刻、当前这一瞬间你内心感受的句子。</p>
+        <p>请仔细阅读每一个句子，然后根据你当下的真实感受，选择最符合你当前情况的选项。不要考虑太长时间，凭你的第一反应作答即可。</p>`;
+
+  /** 与《总指导语.md》一致 */
+  const GENERAL_WELCOME_STIMULUS = `
+      <div style="max-width:640px;margin:0 auto;line-height:1.85;text-align:left;">
+        <p>欢迎参加本次实验。感谢你抽出时间来参与。</p>
+        <p>本实验是一项关于决策行为的研究，你将在电脑上完成一个“气球充气”的任务，并在任务前后填写几份简短的问卷。整个实验过程大约需要 15-20 分钟。</p>
+        <p>请在实验过程中保持专注，尽量减少不必要的动作和外界干扰。在任务正式开始之前，请仔细阅读屏幕上的说明，确保完全理解后再开始操作。如有任何疑问，请随时向主试提出。</p>
+        <p>请你想象实验中的奖励是真实的：你在任务中获得的总金额将被累加起来，在实验结束后以现金（或等值报酬）的形式发放给你。因此，请认真对待你在每一个决策中的选择。</p>
+      </div>`;
+
   const TRAIT_T_KEYS = Array.from(
     { length: TRAIT_SCALE_ITEMS.length },
     (_, i) => `trait_t${String(i + 1).padStart(2, "0")}`
@@ -220,6 +237,116 @@
 
   function makeDemographicsTimeline() {
     return [{ type: DemographicsPlugin }];
+  }
+
+  function escapeHtml(s) {
+    return String(s)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;");
+  }
+
+  /** 单页呈现若干道 1–4 题，提交后写入 bartResults 并结束试次 */
+  class Likert4ScalePagePlugin {
+    constructor(jsPsych) {
+      this.jsPsych = jsPsych;
+    }
+
+    static info = {
+      name: "bart-likert4-scale-page",
+      parameters: {
+        scale_task: { type: ParameterType.STRING, default: "bart_trait_scale" },
+        title_heading: { type: ParameterType.STRING, default: "" },
+        subtitle_suffix_html: { type: ParameterType.STRING, default: "" },
+        preamble_html: { type: ParameterType.STRING, default: "" },
+        rating_instruction_html: { type: ParameterType.STRING, default: "" },
+        item_texts: { type: ParameterType.STRING, array: true, default: [] },
+        response_keys: { type: ParameterType.STRING, array: true, default: [] },
+        measure_phase: { type: ParameterType.STRING, default: "" },
+        block_index: { type: ParameterType.INT, default: 0 }
+      }
+    };
+
+    trial(display_element, trial) {
+      const items = trial.item_texts || [];
+      const keys = trial.response_keys || [];
+      const n = items.length;
+      if (n === 0 || keys.length !== n) {
+        console.error("Likert4ScalePagePlugin: item_texts / response_keys 无效");
+        this.jsPsych.finishTrial({ task: trial.scale_task, error: "invalid_scale_items" });
+        return;
+      }
+      const start = performance.now();
+      const rowNames = items.map((_, idx) => `bart_l4_${trial.scale_task}_${idx}`);
+
+      const rowsHtml = items
+        .map((text, idx) => {
+          const num = String(idx + 1).padStart(2, "0");
+          const g = rowNames[idx];
+          const opts = [1, 2, 3, 4]
+            .map(
+              (v) =>
+                `<label class="bart-scale-opt"><input type="radio" name="${g}" value="${v}" /> <span>${v}</span></label>`
+            )
+            .join("");
+          return `<div class="bart-scale-row">
+            <div class="bart-scale-q"><span class="bart-scale-num">${num}</span>${escapeHtml(text)}</div>
+            <div class="bart-scale-likert" role="radiogroup" aria-label="第 ${idx + 1} 题">${opts}</div>
+          </div>`;
+        })
+        .join("");
+
+      display_element.innerHTML = `
+        <div class="bart-wrapper bart-scale-page">
+          <div class="bart-scale-inner">
+            <p class="bart-scale-title"><strong>${escapeHtml(trial.title_heading)}</strong>${trial.subtitle_suffix_html || ""}</p>
+            ${trial.preamble_html || ""}
+            ${trial.rating_instruction_html || ""}
+            ${rowsHtml}
+            <div class="bart-scale-submit-wrap">
+              <button type="button" class="bart-btn btn-pump" id="bart-scale-submit">提交并继续</button>
+            </div>
+          </div>
+        </div>`;
+
+      display_element.querySelector("#bart-scale-submit").addEventListener("click", () => {
+        const missingNums = [];
+        for (let i = 0; i < n; i += 1) {
+          const el = display_element.querySelector(`input[name="${rowNames[i]}"]:checked`);
+          if (!el) missingNums.push(String(i + 1).padStart(2, "0"));
+        }
+        if (missingNums.length > 0) {
+          window.alert(
+            `以下题号尚未选择，请补全后再提交：${missingNums.join("、")}（共 ${missingNums.length} 题）`
+          );
+          return;
+        }
+        const values = [];
+        for (let i = 0; i < n; i += 1) {
+          const el = display_element.querySelector(`input[name="${rowNames[i]}"]:checked`);
+          values.push(Number.parseInt(el.value, 10));
+        }
+        const keyVals = Object.fromEntries(keys.map((k, i) => [k, values[i]]));
+        const rt = Number((performance.now() - start).toFixed(2));
+        const base = {
+          task: trial.scale_task,
+          subject_id: subjectId,
+          subject_number: subjectNumber,
+          design: DESIGN,
+          balance_rule: "n_a",
+          block_order: blockOrderLabel,
+          block_index: trial.block_index,
+          rt
+        };
+        const row =
+          trial.scale_task === "bart_stress_scale"
+            ? { ...base, measure_phase: trial.measure_phase, ...keyVals }
+            : { ...base, ...keyVals };
+        bartResults.push(row);
+        this.jsPsych.finishTrial(row);
+      });
+    }
   }
 
   /**
@@ -754,13 +881,12 @@
     };
   }
 
-  const likert10 = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"];
-
+  /** 各次「特质状态量表 S」在流程中的位置说明（屏上副标题）；`measure_phase` 与之一一对应写入 CSV */
   const STRESS_PHASE_COPY = {
-    pre_block_1: "第 1 部分 <strong>开始前</strong>（尚未进行该部分 BART）",
-    post_block_1: "第 1 部分 <strong>刚结束</strong>",
-    pre_block_2: "第 2 部分 <strong>开始前</strong>（休息后、尚未进行该部分 BART）",
-    post_block_2: "第 2 部分 <strong>刚结束</strong>"
+    s_after_trait: "填写特质问卷之后、阅读任务说明<strong>之前</strong>",
+    s_pre_bart_block1: "第 1 环节气球任务<strong>刚结束后</strong>",
+    s_after_rest: "休息结束后、阅读第 2 环节说明<strong>之前</strong>",
+    s_pre_bart_block2: "第 2 环节气球任务<strong>刚结束后</strong>"
   };
 
   /** 与《量表,md》一致的评定说明（HTML） */
@@ -770,141 +896,52 @@
   const likert4 = ["1", "2", "3", "4"];
 
   /**
-   * @param {"pre_block_1"|"post_block_1"|"pre_block_2"|"post_block_2"} phase
-   * @param {number} blockIndex 1 或 2（用于数据归档）
+   * 状态量表 S：单页 20 题。
+   * @param {keyof typeof STRESS_PHASE_COPY} phase
+   * @param {number} blockIndex 归档用（如与环节对应：0=尚未分环节；1=第1环节相关；2=第2环节相关）
    */
   function makeStressTimeline(phase, blockIndex) {
     const phaseIntro = STRESS_PHASE_COPY[phase];
-    const answers = new Array(STRESS_SCALE_ITEMS.length).fill(null);
-    let t0 = null;
     const n = STRESS_SCALE_ITEMS.length;
-
-    return STRESS_SCALE_ITEMS.map((itemText, idx) => ({
-      type: jsPsychHtmlButtonResponse,
-      stimulus: `
-      <div style="max-width:640px;margin:0 auto;line-height:1.85;text-align:left;">
-        <p><strong>压力感受量表</strong>（${phaseIntro}）<span style="color:#555;"> · 第 ${idx + 1} / ${n} 题</span></p>
-        <p>${STRESS_RATING_INSTRUCTION}</p>
-        <p style="margin-top:1em;"><strong>${String(idx + 1).padStart(2, "0")}</strong> ${itemText}</p>
-      </div>`,
-      choices: likert4,
-      on_load() {
-        if (idx === 0) t0 = performance.now();
-      },
-      on_finish(data) {
-        answers[idx] = data.response + 1;
-        if (idx === n - 1) {
-          const row = {
-            task: "bart_stress_scale",
-            subject_id: subjectId,
-            subject_number: subjectNumber,
-            design: DESIGN,
-            balance_rule: "n_a",
-            block_index: blockIndex,
-            block_order: blockOrderLabel,
-            measure_phase: phase,
-            ...Object.fromEntries(STRESS_S_KEYS.map((k, i) => [k, answers[i]])),
-            rt: t0 != null ? Number((performance.now() - t0).toFixed(2)) : null
-          };
-          bartResults.push(row);
-        }
-      }
-    }));
-  }
-
-  /**
-   * 实验正式开始（BART 指导语）前：与《特质量表.md》一致的特质问卷。
-   */
-  function makeTraitTimeline() {
-    const answers = new Array(TRAIT_SCALE_ITEMS.length).fill(null);
-    let t0 = null;
-    const n = TRAIT_SCALE_ITEMS.length;
-
-    return TRAIT_SCALE_ITEMS.map((itemText, idx) => ({
-      type: jsPsychHtmlButtonResponse,
-      stimulus: `
-      <div style="max-width:640px;margin:0 auto;line-height:1.85;text-align:left;">
-        <p><strong>特质问卷</strong>（实验开始前）<span style="color:#555;"> · 第 ${idx + 1} / ${n} 题</span></p>
-        <p>${TRAIT_RATING_INSTRUCTION}</p>
-        <p style="margin-top:1em;"><strong>${String(idx + 1).padStart(2, "0")}</strong> ${itemText}</p>
-      </div>`,
-      choices: likert4,
-      on_load() {
-        if (idx === 0) t0 = performance.now();
-      },
-      on_finish(data) {
-        answers[idx] = data.response + 1;
-        if (idx === n - 1) {
-          const row = {
-            task: "bart_trait_scale",
-            subject_id: subjectId,
-            subject_number: subjectNumber,
-            design: DESIGN,
-            balance_rule: "n_a",
-            block_index: 0,
-            block_order: blockOrderLabel,
-            ...Object.fromEntries(TRAIT_T_KEYS.map((k, i) => [k, answers[i]])),
-            rt: t0 != null ? Number((performance.now() - t0).toFixed(2)) : null
-          };
-          bartResults.push(row);
-        }
-      }
-    }));
-  }
-
-  function makeSelfReportTimeline() {
-    let anxietyRating = null;
-    let reportStart = null;
     return [
       {
-        type: jsPsychHtmlButtonResponse,
-        stimulus: `
-      <div style="max-width:560px;margin:0 auto;line-height:1.8;text-align:left;">
-        <p>BART 任务已全部结束。</p>
-        <p>请根据<strong>此刻</strong>感受选择：你当前的紧张/焦虑程度如何？（1 = 完全不焦虑，10 = 非常焦虑）</p>
-      </div>`,
-        choices: likert10,
-        on_load() {
-          reportStart = performance.now();
-        },
-        on_finish(data) {
-          anxietyRating = data.response + 1;
-        }
-      },
+        type: Likert4ScalePagePlugin,
+        scale_task: "bart_stress_scale",
+        title_heading: "特质状态量表 · 状态（S）",
+        subtitle_suffix_html: `（${phaseIntro}）<span style="color:#555"> · 共 ${n} 题</span>`,
+        preamble_html: STRESS_SCALE_PREAMBLE_HTML,
+        rating_instruction_html: `<p>${STRESS_RATING_INSTRUCTION}</p>`,
+        item_texts: STRESS_SCALE_ITEMS,
+        response_keys: STRESS_S_KEYS,
+        measure_phase: phase,
+        block_index: blockIndex,
+        css_classes: ["bart-scale-trial"]
+      }
+    ];
+  }
+
+  /** 特质量表 T：单页 20 题。 */
+  function makeTraitTimeline() {
+    const n = TRAIT_SCALE_ITEMS.length;
+    return [
       {
-        type: jsPsychHtmlButtonResponse,
-        stimulus: `
-      <div style="max-width:560px;margin:0 auto;line-height:1.8;text-align:left;">
-        <p>请根据<strong>此刻</strong>感受选择：你觉得刚才的决策难度如何？（1 = 非常容易，10 = 非常困难）</p>
-      </div>`,
-        choices: likert10,
-        on_finish(data) {
-          const row = {
-            task: "bart_block_self_report",
-            subject_id: subjectId,
-            subject_number: subjectNumber,
-            design: DESIGN,
-            balance_rule: "n_a",
-            block_index: 0,
-            block_order: blockOrderLabel,
-            granularity: "",
-            granularity_k: CONFIG.granularityK,
-            base_reward_per_effective_step: CONFIG.baseRewardPerEffectiveStep,
-            anxiety_rating: anxietyRating,
-            difficulty_rating: data.response + 1,
-            rt:
-              reportStart != null
-                ? Number((performance.now() - reportStart).toFixed(2))
-                : null
-          };
-          bartResults.push(row);
-        }
+        type: Likert4ScalePagePlugin,
+        scale_task: "bart_trait_scale",
+        title_heading: "特质状态量表 · 特质（T）",
+        subtitle_suffix_html: `（实验任务开始前）<span style="color:#555"> · 共 ${n} 题</span>`,
+        preamble_html: TRAIT_SCALE_PREAMBLE_HTML,
+        rating_instruction_html: `<p>${TRAIT_RATING_INSTRUCTION}</p>`,
+        item_texts: TRAIT_SCALE_ITEMS,
+        response_keys: TRAIT_T_KEYS,
+        measure_phase: "",
+        block_index: 0,
+        css_classes: ["bart-scale-trial"]
       }
     ];
   }
 
   /**
-   * BART 与焦虑/难度自评之后、结束页之前：与《刺激评定量表.md》一致的两题（1–4）。
+   * 两轮 BART 与状态量表全部结束后、结束页之前：与《刺激评定量表.md》一致的两题（1–4）。
    */
   function makeStimulusRatingTimeline() {
     let attract01 = null;
@@ -955,21 +992,31 @@
     ];
   }
 
+  /** 与《block前指导语.md》一致：按粒度显示 0.1 元/泵 或 5 元/泵 */
   function blockIntroStimulus(granularity, blockIndex) {
     const isHigh = granularity === "high";
-    const stepMoney = isHigh
-      ? money(CONFIG.baseRewardPerEffectiveStep / CONFIG.granularityK)
-      : money(CONFIG.baseRewardPerEffectiveStep);
+    const yuan = isHigh ? "0.1" : "5";
     const label = getGranularityLabel(granularity);
     return `
       <div style="max-width:640px;margin:0 auto;text-align:left;line-height:1.75;">
-        <h3 style="margin-top:0;">第 ${blockIndex}/2 部分 · ${label}</h3>
-        <p>单次充气 <strong>${stepMoney}</strong>；本部分 <strong>21</strong> 试次（橙/黄/蓝各 7，顺序随机），本部分收益从 <strong>$0.00</strong> 重计。</p>
-        <p>可随时<strong>收账</strong>；若<strong>爆炸</strong>则本气球收益清零。<strong>M = ${CONFIG.explosionCapM}</strong>，爆炸点在 1～M 上均匀随机（第 k 次后未爆则本步概率 1/(M−k+1)）。</p>
+        <p class="bart-block-intro-meta" style="color:#555;font-size:0.95em;margin-bottom:0.75em;">第 ${blockIndex}/2 部分 · ${label}</p>
+        <p>接下来，你将进入第 ${blockIndex} 环节。在这个环节中，气球每成功充气一次，你将获得${yuan}元。请注意，本环节的奖励金额是${yuan}元/泵。</p>
+        <p>请根据你的判断来操作。当你准备好之后，按下「开始」按钮进入任务。</p>
       </div>`;
   }
 
-  function buildBartBlockTimeline({
+  function makeBlockIntroTrial({ granularity, blockIndex }) {
+    return {
+      type: jsPsychHtmlButtonResponse,
+      stimulus: blockIntroStimulus(granularity, blockIndex),
+      choices: ["开始"],
+      on_load() {
+        totalEarnings = 0;
+      }
+    };
+  }
+
+  function buildBartTrialsTimeline({
     granularity,
     blockIndex,
     blockOrderLabel: orderLabel,
@@ -981,16 +1028,7 @@
         ? CONFIG.baseRewardPerEffectiveStep / CONFIG.granularityK
         : CONFIG.baseRewardPerEffectiveStep;
 
-    const transition = {
-      type: jsPsychHtmlButtonResponse,
-      stimulus: blockIntroStimulus(granularity, blockIndex),
-      choices: ["我理解了，开始本部分"],
-      on_load() {
-        totalEarnings = 0;
-      }
-    };
-
-    const bartTrials = trials.map((t, idx) => ({
+    return trials.map((t, idx) => ({
       type: BartPlugin,
       trial_index_global: startGlobalIndex + idx,
       trial_index_in_block: idx + 1,
@@ -1007,8 +1045,6 @@
       design: DESIGN,
       balance_rule: "n_a"
     }));
-
-    return [transition, ...bartTrials];
   }
 
   const restBetweenBlocks = {
@@ -1016,32 +1052,51 @@
     stimulus: `
       <div style="max-width:640px;margin:0 auto;line-height:1.9;text-align:left;">
         <h3>休息</h3>
-        <p>第 1 部分已结束。请<strong>稍作休息</strong>（活动身体、喝水、放松眼睛）。准备好后继续第 2 部分。</p>
+        <p>第 1 环节气球任务与紧随问卷已结束。请<strong>稍作休息</strong>（活动身体、喝水、放松眼睛）。准备好后继续阅读第 2 环节说明。</p>
       </div>`,
     choices: ["休息结束，继续实验"]
   };
 
+  const generalWelcomeTrial = {
+    type: jsPsychHtmlButtonResponse,
+    stimulus: GENERAL_WELCOME_STIMULUS,
+    choices: ["我已阅读并理解，继续"]
+  };
+
+  /**
+   * 时间线中与问卷/指导对应的顺序（气球试次插在 block 与量表之间）：
+   * 基本信息 → 总指导语 → T → S(s_after_trait) → block1 → 第1环节BART → S(s_pre_bart_block1) → 休息 →
+   * S(s_after_rest) → block2 → 第2环节BART → S(s_pre_bart_block2) → 刺激评定
+   */
   const timeline = [
     ...makeDemographicsTimeline(),
+    generalWelcomeTrial,
     ...makeTraitTimeline(),
-    ...makeStressTimeline("pre_block_1", 1),
-    ...buildBartBlockTimeline({
+    ...makeStressTimeline("s_after_trait", 0),
+    makeBlockIntroTrial({
+      granularity: blockGranOrder[0],
+      blockIndex: 1
+    }),
+    ...buildBartTrialsTimeline({
       granularity: blockGranOrder[0],
       blockIndex: 1,
       blockOrderLabel,
       startGlobalIndex: 1
     }),
-    ...makeStressTimeline("post_block_1", 1),
+    ...makeStressTimeline("s_pre_bart_block1", 1),
     restBetweenBlocks,
-    ...makeStressTimeline("pre_block_2", 2),
-    ...buildBartBlockTimeline({
+    ...makeStressTimeline("s_after_rest", 2),
+    makeBlockIntroTrial({
+      granularity: blockGranOrder[1],
+      blockIndex: 2
+    }),
+    ...buildBartTrialsTimeline({
       granularity: blockGranOrder[1],
       blockIndex: 2,
       blockOrderLabel,
       startGlobalIndex: 22
     }),
-    ...makeStressTimeline("post_block_2", 2),
-    ...makeSelfReportTimeline(),
+    ...makeStressTimeline("s_pre_bart_block2", 2),
     ...makeStimulusRatingTimeline()
   ];
 
